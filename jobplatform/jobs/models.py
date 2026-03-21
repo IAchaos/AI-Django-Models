@@ -206,7 +206,7 @@ class Job(TimeStampedModel):
         self.save(update_fields=['status'])
 
     def has_applied(self, user):
-        pass
+        return self.applications.filter(candidate=user).exists()
 
     @classmethod
     def create_for_company(cls, company, title, description, expires_at, slug):
@@ -231,3 +231,110 @@ class Job(TimeStampedModel):
     def __str__(self):
         return self.title + " at " + self.company.name
 
+
+#---------- Application Custom Manager ----------------------
+class ApplicationManager(models.Manager):
+    def for_job(self, job):
+        """
+        Returning all applications for specific job
+        :return: list
+        """
+        return  self.get_queryset().filter(job=job)
+
+    def for_candidate(self, user):
+        """
+        all applications for a specific candidate
+        :param user: user pk
+        :return: list of  applications
+        """
+        return self.get_queryset().filter(candidate=user)
+
+    def pending(self):
+        """
+        all applications currently in Pending status
+        :return: list
+        """
+        return self.get_queryset().filter(status=Application.Status.PENDING)
+
+
+
+# ------------------- Application  Class --------------------
+class Application(TimeStampedModel):
+    """
+    This class used to handle the application logic
+    """
+
+    # ------------ Class inner choices-----------------------
+    class Status(models.TextChoices):
+        PENDING = 'P', 'Pending'
+        REVIEWING = 'R', 'Reviewing'
+        SHORTLISTED = 'S', 'Shortlisted'
+        REJECTED = 'J', 'Rejected'
+        HIRED = 'H', 'Hired'
+
+    # -------------------- Fields------------------------
+    job = models.ForeignKey(Job, on_delete=models.CASCADE, related_name='applications')
+    candidate = models.ForeignKey(User, on_delete=models.CASCADE, related_name='applications')
+    cover_letter = models.TextField(blank=True)
+    resume = models.FileField(upload_to='resumes/')
+    status = models.CharField(max_length=1, choices=Status.choices, default=Status.PENDING)
+
+    # ------ Properties: Computed Fields -------------------
+    @property
+    def is_active(self):
+        """
+        returns True if the application has not been rejected or hired yet
+        :return: Boolean
+        """
+        return self.status not in [self.Status.HIRED , self.Status.REJECTED]
+
+    @property
+    def days_since_applied(self):
+        """
+        how many days since the candidate applied
+        :return: int (number of days)
+        """
+        return (timezone.now() - self.created_at).days
+
+
+    # --------------- Instance Methods --------------------
+    def shortlist(self):
+        """
+        move to Shortlisted, save only changed fields
+        :return: nothing
+        """
+        self.status = self.Status.SHORTLISTED
+        self.save(update_fields=['status','updated_at'])
+
+    def reject(self):
+        self.status = self.Status.REJECTED
+        self.save(update_fields=['status', 'updated_at'])
+
+    def hire(self):
+        self.status = self.Status.HIRED
+        self.save(update_fields=['status', 'updated_at'])
+
+    # --------------- Class methods ------------------------
+    @classmethod
+    def submit(cls, job, candidate, cover_letter, resume):
+        if job.has_applied(candidate):
+            raise ValueError("You can only apply one to this Job.")
+        if job.is_active:
+            raise ValueError("Cannot apply to a closed or expired job.")
+        return cls.objects.create(
+                job=job,
+                candidate=candidate,
+                cover_letter=cover_letter,
+                resume=resume,
+            )
+
+    #------------- Meta ----------------------
+    class Meta:
+        ordering = ['-created_at']
+        unique_together = ['job', 'candidate']
+
+    # Overriding the default manager
+    objects = ApplicationManager()
+
+    def __str__(self):
+        return f"{self.candidate.username} → {self.job.title}"
