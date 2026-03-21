@@ -1,6 +1,8 @@
 
+from datetime import timedelta
 from django.db import models
 from django.utils import timezone
+
 from core.models import TimeStampedModel
 from django.contrib.auth.models import User
 
@@ -67,10 +69,10 @@ class Company(TimeStampedModel):
         used to compute the total number of active jobs by this company
         :return: int
         """
-        """
-        Bug : filter(Status=Job.Status.ACTIVE) 
-        Correct : status in lowercase it matches the actual field name on the model
-        """
+
+        # Bug : filter(Status=Job.Status.ACTIVE)
+        # Correct : status in lowercase it matches the actual field name on the model
+
         return self.jobs.filter(status='A').count()
 
     def is_owned_by(self, user):
@@ -92,14 +94,16 @@ class JobManager(models.Manager):
     """
     Responsible about the Job Queries
     """
+    """
     def active(self):
-        """
-        Getting number of jobs where status == Active
+        
+        NB. moved to ActiveJobManager
+        Getting number of jobs where status == Active not expired
         :return: int
-        """
+
         return self.get_queryset().filter(
             status=Job.Status.ACTIVE, expires_at__gt=timezone.now())
-
+        """
     def by_company(self, company):
         """
         Used to filter jobs offered by certain company
@@ -119,7 +123,13 @@ class JobManager(models.Manager):
             expires_at__gt=timezone.now()
         )
 # ----------------------------------------------
-
+"""
+    . This is class is going to have three level .
+    . Using Proxy Models to achieve reusability and code readibilty .
+    . Proxy models : ActiveJobProxy
+                     ExpiredJobProxy
+                     FeaturedJobProxy
+"""
 # ------------  Job Class --------------------
 class Job(TimeStampedModel):
     """
@@ -150,6 +160,7 @@ class Job(TimeStampedModel):
     expires_at = models.DateTimeField()
     status = models.CharField(max_length=1, choices=Status.choices, default=Status.DRAFT , null=False)
     location_type = models.CharField(max_length=1, choices=LocationType.choices, default=LocationType.ONSITE, null=False)
+    is_featured = models.BooleanField(default=False)
 
     # Overriding the default Manager
     objects = JobManager()
@@ -202,8 +213,8 @@ class Job(TimeStampedModel):
         move status to Closed, save only the changed field
         :return: nothing
         """
-        self.status = 'C'
-        self.save(update_fields=['status'])
+        self.status = self.Status.CLOSED
+        self.save(update_fields=['status','updated_at'])
 
     def has_applied(self, user):
         return self.applications.filter(candidate=user).exists()
@@ -230,6 +241,76 @@ class Job(TimeStampedModel):
 
     def __str__(self):
         return self.title + " at " + self.company.name
+
+# -------- Custom Mangers For Proxy Models -------------------
+# --------- ActiveJobManger-------------------
+class ActiveJobManager(models.Manager):
+    def get_queryset(self):
+        """
+        Filters active and not expired jobs
+        :return: list
+        """
+        return super().get_queryset().filter(
+            status=Job.Status.ACTIVE, expires_at__gt=timezone.now())
+
+# -------- ExpiredJobManager ----------------
+class ExpiredJobManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(expires_at__lte=timezone.now())
+
+# ------- FeaturedJobManager -----------------
+class FeaturedJobManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(
+            status=Job.Status.ACTIVE, expires_at__gt=timezone.now(), is_featured=True
+        )
+
+
+# ---------- Proxy models for Job --------------
+# ---------- ActiveJobProxy -------------------
+
+class ActiveJob(Job):
+    class Meta:
+        proxy = True
+        ordering = ['-is_featured', '-created_at']
+
+    objects = ActiveJobManager()
+
+    def get_similar(self):
+        return ActiveJob.objects.filter(
+            category=self.category,
+        ).exclude(pk=self.pk)[:5]
+
+class ExpiredJob(Job):
+    class Meta:
+        proxy = True
+
+    objects = ExpiredJobManager()
+
+    @property
+    def days_since_expiry(self):
+        return (timezone.now() - self.expires_at).days
+
+    def renew(self, days=30):
+        self.status = self.Status.ACTIVE
+        self.expires_at = timezone.now() + timedelta(days=days)
+
+        self.save(update_fields=['status', 'expires_at', 'updated_at'])
+
+
+
+class FeaturedJob(Job):
+    class Meta:
+        proxy = True
+
+    objects = FeaturedJobManager()
+
+    def unfeature(self):
+        self.is_featured = False
+        self.save(update_fields=['is_featured', 'updated_at'])
+
+
+
 
 
 #---------- Application Custom Manager ----------------------
@@ -319,7 +400,7 @@ class Application(TimeStampedModel):
     def submit(cls, job, candidate, cover_letter, resume):
         if job.has_applied(candidate):
             raise ValueError("You can only apply one to this Job.")
-        if job.is_active:
+        if not  job.is_active:
             raise ValueError("Cannot apply to a closed or expired job.")
         return cls.objects.create(
                 job=job,
