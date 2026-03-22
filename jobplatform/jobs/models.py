@@ -198,6 +198,17 @@ class Job(TimeStampedModel):
         delta = self.expires_at - timezone.now()
         return delta.days
 
+    @property
+    def salary_range(self):
+        from .utils import format_salary
+        return format_salary(self.salary_min, self.salary_max)
+
+    @property
+    def reading_time(self):
+        from .utils import calculate_reading_time
+        return calculate_reading_time(self.description)
+
+
 
     # -------------- Instance Methods-----------------
     def activate(self):
