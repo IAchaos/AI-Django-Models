@@ -1,5 +1,7 @@
 
 from datetime import timedelta
+
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
@@ -161,6 +163,7 @@ class Job(TimeStampedModel):
     status = models.CharField(max_length=1, choices=Status.choices, default=Status.DRAFT , null=False)
     location_type = models.CharField(max_length=1, choices=LocationType.choices, default=LocationType.ONSITE, null=False)
     is_featured = models.BooleanField(default=False)
+    total_applications = models.PositiveIntegerField(default=0)
 
     # Overriding the default Manager
     objects = JobManager()
@@ -208,6 +211,22 @@ class Job(TimeStampedModel):
         from .utils import calculate_reading_time
         return calculate_reading_time(self.description)
 
+    # Model Validation
+    def clean(self):
+        errors = {}
+
+        # Rule One : salary_min cannot be greater than salary_max if both are provided
+        if self.salary_min and self.salary_max:
+            if self.salary_max > self.salary_min:
+                errors['salary_min'] = 'Salary min cannot exceed Max Salary'
+
+
+        # Rule Two: expires_at cannot be set to a date in the past
+        if self.expires_at and self.expires_at < timezone.now():
+            errors['expires_at'] = 'Expiry date cannot be in the past.'
+
+        if errors:
+            raise ValidationError(errors)
 
 
     # -------------- Instance Methods-----------------
@@ -388,6 +407,13 @@ class Application(TimeStampedModel):
         """
         return (timezone.now() - self.created_at).days
 
+    # Model Validation
+    def clean(self):
+        errors = {}
+
+        # Rule One: A candidate cannot apply to their own company's job
+        if self.candidate == self.job.company.owner:
+            errors['candidate'] = 'You cannot apply to your own company \'s job.'
 
     # --------------- Instance Methods --------------------
     def shortlist(self):
